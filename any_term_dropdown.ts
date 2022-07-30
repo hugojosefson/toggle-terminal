@@ -23,7 +23,7 @@ const TERMINALS = [
 
 const TERMINALS_REGEX = TERMINALS.join("|");
 
-const WAIT_FOR_WINDOW_DELAYS_MS = [100, 100, 300, 500, 1000];
+const WAIT_FOR_WINDOW_DELAYS_MS = [0, 1, 10, 100, 200, 300, 500, 1000];
 const MAX_WAIT_FOR_NEW_TERMINAL_MS = 5000;
 
 const rootWindow = await run("lsw -r");
