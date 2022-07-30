@@ -4,8 +4,6 @@
 import { run } from "https://deno.land/x/run_simple@1.1.0/mod.ts";
 import { aFind } from "https://deno.land/x/async_ray@3.2.1/methods/a_find.ts";
 
-// TODO: cache windowId in globalThis.localStorage
-
 const TERMINALS = [
   "alacritty",
   "urxvt",
@@ -61,8 +59,8 @@ async function showWindow(windowId: number): Promise<void> {
   await run(["mapw", "-m", windowIdHex]).catch(() => Promise.resolve());
 }
 
-function parseIntegerLines(commandOutput: string): number[] {
-  return commandOutput
+function parseIntegerLines(commandOutput: string | null | undefined): number[] {
+  return (commandOutput ?? "")
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
@@ -136,23 +134,58 @@ async function getActiveWindowId(): Promise<number | undefined> {
   )[0];
 }
 
+function getStoredWindowIds(): number[] {
+  return parseIntegerLines(globalThis.localStorage.getItem("windowIds"));
+}
+
+function storeWindowIds(windowIds: number[]): void {
+  globalThis.localStorage.setItem(
+    "windowIds",
+    windowIds
+      .map((windowId) => `${windowId}`)
+      .join("\n"),
+  );
+}
+
 async function main(): Promise<void> {
-  const [activeWindow, windowIds] = await Promise.all([
-    await getActiveWindowId(),
-    await ensureTerminalWindowIds(),
-  ]);
-  console.log({ activeWindow, windowIds });
-  await Promise.all(windowIds.map(async function (windowId) {
-    if (activeWindow === windowId) {
-      await hideWindow(windowId);
-    } else {
-      await showWindow(windowId);
-      for (const delay of WAIT_FOR_WINDOW_DELAYS_MS) {
-        await sleep(delay);
-        await focusTerminal(windowId);
-      }
+  const activeWindowPromise = getActiveWindowId();
+  const storedWindowIds = getStoredWindowIds();
+  const activeWindow = await activeWindowPromise;
+  console.log({ activeWindow, storedWindowIds });
+  if (activeWindow && storedWindowIds.includes(activeWindow)) {
+    await hideWindow(activeWindow);
+    if (storedWindowIds.length !== 1) {
+      storeWindowIds([activeWindow]);
     }
-  }));
+    return;
+  }
+
+  const windowIds = await ensureTerminalWindowIds();
+  console.log({ activeWindow, windowIds });
+  if (activeWindow && windowIds.includes(activeWindow)) {
+    await hideWindow(activeWindow);
+    storeWindowIds([activeWindow]);
+    return;
+  }
+  // we now know it wasn't the active window
+  // bring them forward!
+  const unmappedStoredWindowIds = storedWindowIds.filter((storedWindowId) =>
+    windowIds.includes(storedWindowId)
+  );
+  const windowsToShow = unmappedStoredWindowIds.length > 0
+    ? unmappedStoredWindowIds
+    : windowIds;
+  console.log({ windowsToShow });
+
+  const broughtForwardAllWindows = windowsToShow.map(async function (windowId) {
+    await showWindow(windowId);
+    for (const delay of WAIT_FOR_WINDOW_DELAYS_MS) {
+      await sleep(delay);
+      await focusTerminal(windowId);
+    }
+  });
+  storeWindowIds(windowsToShow);
+  await Promise.all(broughtForwardAllWindows);
 }
 
 if (import.meta.main) {
