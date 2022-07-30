@@ -69,13 +69,15 @@ function parseIntegerLines(commandOutput: string | null | undefined): number[] {
 }
 
 async function getTerminalWindowIds(): Promise<number[]> {
-  const firstResult: string = await run([
-    "bash",
-    "-c",
-    `comm -12 <(xdotool search --name "${TERMINALS_REGEX}" | sort) <(xdotool search --class "${TERMINALS_REGEX}" | sort)`,
-  ]);
-  if (firstResult) {
-    return parseIntegerLines(firstResult);
+  const firstResult: number[] = parseIntegerLines(
+    await run([
+      "bash",
+      "-c",
+      `comm -12 <(xdotool search --name "${TERMINALS_REGEX}" | sort) <(xdotool search --class "${TERMINALS_REGEX}" | sort)`,
+    ]),
+  );
+  if (firstResult.length) {
+    return firstResult;
   }
   return parseIntegerLines(
     await run(["xdotool", "search", "--class", TERMINALS_REGEX]).catch(() =>
