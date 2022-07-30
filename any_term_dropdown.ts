@@ -4,12 +4,13 @@
 import { run } from "https://deno.land/x/run_simple@1.1.0/mod.ts";
 import { aFind } from "https://deno.land/x/async_ray@3.2.1/methods/a_find.ts";
 
-const terminals = [
-  "gnome-terminal",
+// TODO: cache windowId in globalThis.localStorage
+
+const TERMINALS = [
+  "alacritty",
   "urxvt",
   "xterm",
   "uxterm",
-  "alacritty",
   "kitty",
   "termite",
   "sakura",
@@ -18,62 +19,100 @@ const terminals = [
   "mate-terminal",
   "pantheon-terminal",
   "konsole",
+  "gnome-terminal",
   "xfce4-terminal",
 ];
 
-const terminalsRegex = terminals.join("|");
+const TERMINALS_REGEX = TERMINALS.join("|");
 
-const waitForWindowDelaysMs = [100, 200, 500, 1000];
+const WAIT_FOR_WINDOW_DELAYS_MS = [100, 100, 300, 500, 1000];
+const MAX_WAIT_FOR_NEW_TERMINAL_MS = 5000;
 
 const rootWindow = await run("lsw -r");
 const [screenWidth, screenHeight] = await Promise.all(
   ["w", "h"].map(
-    (dimension) => run([`wattr`, dimension, rootWindow]),
+    (dimension) => run(["wattr", dimension, rootWindow]),
   ),
 );
 
-async function focusTerminal(windowId: string): Promise<void> {
+function hex(n: number): string {
+  return `0x${n.toString(16)}`;
+}
+
+async function focusTerminal(windowId: number): Promise<void> {
+  const windowIdHex = hex(windowId);
   await Promise.all(
     [
-      ["wtf"],
-      ["chwso", "-r"],
-      ["wrs", screenWidth, screenHeight],
-    ].map(
-      (command) => run([...command, windowId]),
-    ),
+      ["wrs", screenWidth, screenHeight, windowIdHex],
+      ["wtf", windowIdHex],
+      ["chwso", "-r", windowIdHex],
+    ]
+      .map((command) => run(command).catch(() => Promise.resolve())),
   );
 }
 
-function parsePidLines(commandOutput: string): number[] {
+async function hideWindow(windowId: number): Promise<void> {
+  const windowIdHex = hex(windowId);
+  await run(["mapw", "-u", windowIdHex]).catch(() => Promise.resolve());
+}
+
+async function showWindow(windowId: number): Promise<void> {
+  const windowIdHex = hex(windowId);
+  await run(["mapw", "-m", windowIdHex]).catch(() => Promise.resolve());
+}
+
+function parseIntegerLines(commandOutput: string): number[] {
   return commandOutput
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
-    .map((line) => parseInt(line, 10));
+    .map((line) => parseInt(line, 10))
+    .filter((n) => !Number.isNaN(n));
 }
 
-async function getTerminalPids(): Promise<number[]> {
+async function getTerminalWindowIds(): Promise<number[]> {
   const firstResult: string = await run([
     "bash",
     "-c",
-    `comm -12 <(xdotool search --name "${terminalsRegex}" | sort) <(xdotool search --class "${terminalsRegex}" | sort)`,
+    `comm -12 <(xdotool search --name "${TERMINALS_REGEX}" | sort) <(xdotool search --class "${TERMINALS_REGEX}" | sort)`,
   ]);
   if (firstResult) {
-    return parsePidLines(firstResult);
+    return parseIntegerLines(firstResult);
   }
-  return parsePidLines(
-    await run(["xdotool", "search", "--class", terminalsRegex]).catch(() => ""),
+  return parseIntegerLines(
+    await run(["xdotool", "search", "--class", TERMINALS_REGEX]).catch(() =>
+      ""
+    ),
   );
 }
 
-async function ensureTerminalPids(): Promise<number[]> {
-  const pids = await getTerminalPids();
-  if (pids.length > 0) {
-    return pids;
+async function waitForTerminalWindowIds(maxWaitMs: number): Promise<number[]> {
+  const startTime = Date.now();
+  const expireTime = startTime + maxWaitMs;
+  while (Date.now() < expireTime) {
+    const windowIds = await getTerminalWindowIds();
+    if (windowIds.length > 0) {
+      return windowIds;
+    }
+    await sleep(10);
+  }
+  throw new Error(
+    `Could not find Window Id(s) of new terminal within ${maxWaitMs} ms.`,
+  );
+}
+
+function sleep(delayMs: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function ensureTerminalWindowIds(): Promise<number[]> {
+  const windowIds = await getTerminalWindowIds();
+  if (windowIds.length > 0) {
+    return windowIds;
   }
 
   const terminal: string | undefined = await aFind(
-    terminals,
+    TERMINALS,
     (terminalCandidate) =>
       run(["sh", "-c", `command -v "${terminalCandidate}"`]).then(
         () => true,
@@ -81,38 +120,39 @@ async function ensureTerminalPids(): Promise<number[]> {
       ),
   );
   if (!terminal) {
-    throw new Error(`Could not find any terminal to run: ${terminals}`);
+    throw new Error(`Could not find any terminal to run: ${TERMINALS}`);
   }
-  const newTerminalOutput = await run([
+  await run([
     "bash",
     "-c",
-    `
-          ${terminal} 2>/dev/null >/dev/null &
-          disown 2>/dev/null >/dev/null
-          echo "$!"
-        `,
+    `"${terminal}" & disown`,
   ]);
-  pids.push(...parsePidLines(newTerminalOutput));
-  if (pids.length === 0) {
-    throw new Error(
-      `Could not find pid of terminal "${terminal}". Output was:\n${newTerminalOutput}`,
-    );
-  }
-  return pids;
+  return await waitForTerminalWindowIds(MAX_WAIT_FOR_NEW_TERMINAL_MS);
+}
+
+async function getActiveWindowId(): Promise<number | undefined> {
+  return parseIntegerLines(
+    await run(["xdotool", "getactivewindow"]),
+  )[0];
 }
 
 async function main(): Promise<void> {
-  const pids = await ensureTerminalPids();
-  const windowIdPromises = pids.map(async (pid) => {
-    return await run(["printf", "0x%x", pid]);
-  });
-  windowIdPromises.map(async (windowIdPromise) => {
-    const windowId = await windowIdPromise;
-    await run(["mapw", "-t", windowId]);
-    waitForWindowDelaysMs.forEach((delay) =>
-      setTimeout(() => focusTerminal(windowId), delay)
-    );
-  });
+  const [activeWindow, windowIds] = await Promise.all([
+    await getActiveWindowId(),
+    await ensureTerminalWindowIds(),
+  ]);
+  console.log({ activeWindow, windowIds });
+  await Promise.all(windowIds.map(async function (windowId) {
+    if (activeWindow === windowId) {
+      await hideWindow(windowId);
+    } else {
+      await showWindow(windowId);
+      for (const delay of WAIT_FOR_WINDOW_DELAYS_MS) {
+        await sleep(delay);
+        await focusTerminal(windowId);
+      }
+    }
+  }));
 }
 
 if (import.meta.main) {
