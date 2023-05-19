@@ -17,6 +17,8 @@ const TERMINALS = [
   "mate-terminal",
   "pantheon-terminal",
   "konsole",
+  "gnome-console",
+  "kgx",
   "gnome-terminal",
   "xfce4-terminal",
 ];
